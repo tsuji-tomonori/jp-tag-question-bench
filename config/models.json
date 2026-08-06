@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "default_region": "us-east-1",
+  "models": {
+    "gpt-oss-20b": {
+      "display_name": "OpenAI gpt-oss-20b",
+      "provider": "OpenAI",
+      "model_id": "openai.gpt-oss-20b-1:0",
+      "enabled": true,
+      "notes": "OpenAIの軽量オープンウェイトモデル"
+    },
+    "claude-3-haiku": {
+      "display_name": "Anthropic Claude 3 Haiku",
+      "provider": "Anthropic",
+      "model_id": "anthropic.claude-3-haiku-20240307-v1:0",
+      "enabled": true,
+      "notes": "2026-09-10にEOL予定のLegacyモデル。世代比較用に残す"
+    },
+    "gemma-3-4b-it": {
+      "display_name": "Google Gemma 3 4B IT",
+      "provider": "Google",
+      "model_id": "google.gemma-3-4b-it",
+      "enabled": true,
+      "notes": "ユーザー指定のgamaをGemmaとして解釈した軽量モデル"
+    },
+    "nova-micro": {
+      "display_name": "Amazon Nova Micro",
+      "provider": "Amazon",
+      "model_id": "amazon.nova-micro-v1:0",
+      "enabled": true,
+      "notes": "低コストのテキスト専用モデル"
+    },
+    "ministral-3b": {
+      "display_name": "Mistral AI Ministral 3B",
+      "provider": "Mistral AI",
+      "model_id": "mistral.ministral-3-3b-instruct",
+      "enabled": true,
+      "notes": "3Bパラメータの超軽量モデル"
+    }
+  }
+}
+

@@ -1,0 +1,236 @@
+name: Amazon Bedrock benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "all、またはカンマ区切りのmodel key（空白なし）"
+        required: true
+        default: all
+        type: string
+      replicates:
+        description: "各セルの反復数"
+        required: true
+        default: "4"
+        type: choice
+        options: ["1", "2", "4", "8"]
+      temperature:
+        description: "生成温度"
+        required: true
+        default: "1.0"
+        type: choice
+        options: ["0.0", "0.5", "1.0"]
+      max_workers:
+        description: "モデルごとの同時リクエスト数"
+        required: true
+        default: "4"
+        type: choice
+        options: ["1", "2", "4", "8"]
+      dry_run:
+        description: "Bedrockを呼ばず、割付と集計経路だけを確認する"
+        required: true
+        default: false
+        type: boolean
+      stimuli_path:
+        description: "data/以下のプロンプト設定JSON"
+        required: true
+        default: data/stimuli.json
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: bedrock-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  validate-inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate model keys
+        shell: bash
+        env:
+          REQUESTED_MODELS: ${{ inputs.models }}
+        run: |
+          if [[ "${REQUESTED_MODELS}" == "all" ]]; then
+            exit 0
+          fi
+          allowed=",gpt-oss-20b,claude-3-haiku,gemma-3-4b-it,nova-micro,ministral-3b,"
+          IFS=',' read -ra requested <<< "${REQUESTED_MODELS}"
+          if [[ "${#requested[@]}" -eq 0 ]]; then
+            echo "models must not be empty" >&2
+            exit 1
+          fi
+          for candidate in "${requested[@]}"; do
+            if [[ -z "${candidate}" || "${allowed}" != *",${candidate},"* ]]; then
+              echo "Unknown model key: ${candidate}" >&2
+              exit 1
+            fi
+          done
+      - name: Validate stimuli path and JSON syntax
+        shell: bash
+        env:
+          STIMULI_PATH: ${{ inputs.stimuli_path }}
+        run: |
+          if [[ "${STIMULI_PATH}" != data/*.json || "${STIMULI_PATH}" == *".."* ]]; then
+            echo "stimuli_path must be a JSON file directly under data/" >&2
+            exit 1
+          fi
+          if [[ ! -f "${STIMULI_PATH}" ]]; then
+            echo "Stimuli file not found: ${STIMULI_PATH}" >&2
+            exit 1
+          fi
+          python -m json.tool "${STIMULI_PATH}" >/dev/null
+
+  run-model:
+    needs: validate-inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - gpt-oss-20b
+          - claude-3-haiku
+          - gemma-3-4b-it
+          - nova-micro
+          - ministral-3b
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Select model
+        id: select
+        shell: bash
+        env:
+          REQUESTED_MODELS: ${{ inputs.models }}
+        run: |
+          selected=false
+          if [[ "${REQUESTED_MODELS}" == "all" ]]; then
+            selected=true
+          else
+            IFS=',' read -ra requested <<< "${REQUESTED_MODELS}"
+            for candidate in "${requested[@]}"; do
+              if [[ "${candidate}" == "${{ matrix.model }}" ]]; then
+                selected=true
+              fi
+            done
+          fi
+          echo "selected=${selected}" >> "${GITHUB_OUTPUT}"
+      - if: steps.select.outputs.selected == 'true'
+        uses: actions/checkout@v4
+      - if: steps.select.outputs.selected == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        if: steps.select.outputs.selected == 'true'
+        run: python -m pip install --upgrade pip && pip install -e .
+      - name: Configure AWS credentials with OIDC
+        if: steps.select.outputs.selected == 'true' && !inputs.dry_run
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_BEDROCK_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Run benchmark
+        id: benchmark
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        env:
+          STIMULI_PATH: ${{ inputs.stimuli_path }}
+        run: |
+          dry_run=""
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            dry_run="--dry-run"
+          fi
+          set +e
+          jp-tag-bench-run \
+            --model-key "${{ matrix.model }}" \
+            --region "${AWS_REGION}" \
+            --replicates "${{ inputs.replicates }}" \
+            --temperature "${{ inputs.temperature }}" \
+            --max-workers "${{ inputs.max_workers }}" \
+            --seed "${{ github.run_id }}" \
+            --stimuli "${STIMULI_PATH}" \
+            --output-dir artifacts \
+            ${dry_run}
+          status=$?
+          echo "runner_exit_code=${status}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "exit_code=${status}" >> "${GITHUB_OUTPUT}"
+          exit 0
+      - name: Upload model evidence
+        if: always() && steps.select.outputs.selected == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bedrock-${{ matrix.model }}
+          path: artifacts/${{ matrix.model }}/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Fail after preserving evidence
+        if: always() && steps.select.outputs.selected == 'true' && steps.benchmark.outputs.exit_code != '0'
+        shell: bash
+        env:
+          RUNNER_EXIT_CODE: ${{ steps.benchmark.outputs.exit_code }}
+        run: |
+          echo "Benchmark failed with exit code ${RUNNER_EXIT_CODE}. Evidence was uploaded." >&2
+          exit 1
+
+  aggregate-and-commit:
+    if: always() && needs.validate-inputs.result == 'success'
+    needs: [validate-inputs, run-model]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install -e .
+      - name: Download all available evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bedrock-*
+          path: artifacts
+          merge-multiple: false
+      - name: Analyze
+        shell: bash
+        run: |
+          run_id="${{ github.run_id }}-${{ github.run_attempt }}"
+          jp-tag-bench-analyze \
+            --input-dir artifacts \
+            --output-dir "results/runs/${run_id}" \
+            --latest-dir results \
+            --run-id "${run_id}"
+          cat results/latest.md >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bedrock-benchmark-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/latest.md
+            results/latest.json
+            results/latest-rates.csv
+            results/latest-contrasts.csv
+          retention-days: 90
+      - name: Commit results
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git add results/
+          if git diff --cached --quiet; then
+            echo "No result changes to commit"
+            exit 0
+          fi
+          git commit -m "results: Bedrock benchmark ${{ github.run_id }}-${{ github.run_attempt }}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
