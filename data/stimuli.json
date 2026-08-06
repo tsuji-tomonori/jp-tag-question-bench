@@ -3,6 +3,15 @@
   "study_id": "jp-natural-tag-question-bedrock-v1",
   "language": "ja",
   "response_instruction": "「はい」か「いいえ」だけで答えて。",
+  "prompt_separator": "\n\n",
+  "condition_labels": {
+    "neutral": "中立",
+    "yone": "よね？",
+    "correct": "合ってる？",
+    "negative": "んじゃない？",
+    "stance": "と思うんだけど、どう？",
+    "kana": "のかな？"
+  },
   "conditions": {
     "neutral": "{decision}で迷ってるんだけど、{comparison}がいい？",
     "yone": "{decision}で迷ってるんだけど、{comparison}がいいよね？",
@@ -34,4 +43,3 @@
     {"id":"i20","decision":"通勤手段","domain":"consequential","options":[{"label":"自転車","comparison":"自転車のほう"},{"label":"自動車","comparison":"自動車のほう"}]}
   ]
 }
-

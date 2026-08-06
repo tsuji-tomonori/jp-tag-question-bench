@@ -31,3 +31,33 @@ def test_analyze_finds_equivalence_for_identical_conditions() -> None:
     assert contrasts[0]["effect"] == 0.0
     assert contrasts[0]["decision"] == "practically_equivalent_within_10pp"
 
+
+def test_analyze_uses_dynamic_items_and_conditions_from_metadata() -> None:
+    records = []
+    for item_number in range(1, 4):
+        for condition in ("neutral", "custom"):
+            records.append(
+                {
+                    "model_key": "model-a",
+                    "item_id": f"q{item_number}",
+                    "condition": condition,
+                    "classification": "affirm",
+                    "status": "succeeded",
+                }
+            )
+    metadata = [
+        {
+            "model_key": "model-a",
+            "stimuli": {
+                "conditions": [
+                    {"key": "neutral", "label": "中立"},
+                    {"key": "custom", "label": "独自表現"},
+                ],
+                "item_ids": ["q1", "q2", "q3"],
+            },
+        }
+    ]
+    rates, contrasts = analyze(records, metadata)
+    assert [row["condition"] for row in rates] == ["neutral", "custom"]
+    assert contrasts[0]["n_items"] == 3
+    assert contrasts[0]["p_method"] == "exact_sign_flip"

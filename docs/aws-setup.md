@@ -1,5 +1,7 @@
 # AWS BedrockとGitHub OIDCの設定
 
+GitHubリポジトリ側の初期設定は[repository-setup.md](repository-setup.md)、実行操作は[actions-guide.md](actions-guide.md)を参照してください。
+
 ## 1. 使用リージョン
 
 既定値は`us-east-1`です。今回の5モデルは、Amazon BedrockのConverse APIを`us-east-1`から呼び出せます。
@@ -97,15 +99,15 @@ AWSのアクセスキーをGitHub Secretsへ保存する必要はありません
 
 ## 7. GitHub側の書き込み権限
 
-ワークフローは`results/`を実行元ブランチへコミットします。リポジトリのActions設定で、`GITHUB_TOKEN`に書き込みを許可してください。
+ワークフローは`results/`を実行元ブランチへコミットします。ワークフロー内では`contents: write`を明示しています。リポジトリまたは組織のActionsポリシーで、この権限が禁止されていないことを確認してください。
 
 mainブランチを保護している場合は、次のいずれかを選びます。
 
-1. GitHub Actions botに結果コミットのバイパスを限定的に許可します。
+1. GitHub Actionsによる結果コミットを限定的に許可します。
 2. 信頼ポリシーへ結果用ブランチを追加し、そのブランチからワークフローを実行します。
-3. コミット工程をPR作成方式へ変更します。
+
+具体的な分岐は[repository-setup.md](repository-setup.md)の「結果コミットとブランチ保護」を参照してください。
 
 ## 8. 初回確認
 
 最初は`dry_run=true`、`replicates=1`で実行し、割付、成果物、結果コミット経路を確認します。次にモデルを一つだけ指定して実呼び出しを確認し、最後に`all`と4反復を実行してください。
-

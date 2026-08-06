@@ -45,10 +45,11 @@
 
 ## 統計解析
 
-個々の回答を独立標本とせず、20項目を検定単位とします。
+個々の回答を独立標本とせず、プロンプト設定ファイルに含まれる項目を検定単位とします。
 
 - 効果量：各表現の肯定率−中立条件の肯定率
-- 差の検定：`2^20`通りを列挙する正確な対応付き符号反転検定
+- 差の検定：20項目以下では全組合せを列挙する正確な対応付き符号反転検定
+- 21項目以上では20万回の対応付きモンテカルロ符号反転検定
 - 多重比較：全モデル×5表現を一つの検定族とするHolm補正
 - 効果量区間：項目ブートストラップ20,000回の95%信頼区間
 - 同等性検定：±10パーセントポイントを境界とする対応付きTOST
@@ -57,7 +58,14 @@ Holm調整後`p < 0.05`を有意差とします。有意差がなく、同等性
 
 ## GitHub Actionsの実行
 
-事前に[docs/aws-setup.md](docs/aws-setup.md)のOIDCとIAMロールを設定します。長期AWSアクセスキーは使用しません。
+最初に次の文書を順番に確認してください。
+
+1. [リポジトリの初期設定](docs/repository-setup.md)
+2. [AWS BedrockとGitHub OIDCの設定](docs/aws-setup.md)
+3. [GitHub Actionsの実行手順](docs/actions-guide.md)
+4. [プロンプトと設問の変更方法](docs/prompt-customization.md)
+
+AWS認証にはOIDCを使用し、長期AWSアクセスキーは使用しません。
 
 GitHubの`Actions > Amazon Bedrock benchmark > Run workflow`から実行します。
 
@@ -70,8 +78,11 @@ GitHubの`Actions > Amazon Bedrock benchmark > Run workflow`から実行しま�
 | `temperature` | 0.0、0.5、1.0から選択します |
 | `max_workers` | モデルごとの同時リクエスト数です |
 | `dry_run` | Bedrockを呼ばず、割付と集計経路だけを確認します |
+| `stimuli_path` | 使用する`data/`以下のプロンプト設定JSONです |
 
 初回は`dry_run=true`で確認してください。
+
+表現、回答指示、設問、選択肢は`data/stimuli.json`へ集約しています。別の実験を保存したまま実行する場合は、JSONを`data/`以下へコピーし、`stimuli_path`で選択できます。Pythonコードやワークフローの変更は不要です。
 
 ## 成果物
 
@@ -123,4 +134,3 @@ jp-tag-bench-run \
 - モデル利用不可やクォータ超過を成功回答として補完しません。失敗証跡を残します。
 - 結果コミットはワークフローを実行したブランチへ行います。ブランチ保護ルールと整合させてください。
 - Claude 3 HaikuのEOL後は、後継Haikuへ置き換え、モデル変更を結果メタデータに残してください。
-

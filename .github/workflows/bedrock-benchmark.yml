@@ -31,6 +31,11 @@ on:
         required: true
         default: false
         type: boolean
+      stimuli_path:
+        description: "data/以下のプロンプト設定JSON"
+        required: true
+        default: data/stimuli.json
+        type: string
 
 permissions:
   contents: write
@@ -48,6 +53,7 @@ jobs:
   validate-inputs:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Validate model keys
         shell: bash
         env:
@@ -68,6 +74,20 @@ jobs:
               exit 1
             fi
           done
+      - name: Validate stimuli path and JSON syntax
+        shell: bash
+        env:
+          STIMULI_PATH: ${{ inputs.stimuli_path }}
+        run: |
+          if [[ "${STIMULI_PATH}" != data/*.json || "${STIMULI_PATH}" == *".."* ]]; then
+            echo "stimuli_path must be a JSON file directly under data/" >&2
+            exit 1
+          fi
+          if [[ ! -f "${STIMULI_PATH}" ]]; then
+            echo "Stimuli file not found: ${STIMULI_PATH}" >&2
+            exit 1
+          fi
+          python -m json.tool "${STIMULI_PATH}" >/dev/null
 
   run-model:
     needs: validate-inputs
@@ -118,8 +138,11 @@ jobs:
           role-to-assume: ${{ vars.AWS_BEDROCK_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Run benchmark
+        id: benchmark
         if: steps.select.outputs.selected == 'true'
         shell: bash
+        env:
+          STIMULI_PATH: ${{ inputs.stimuli_path }}
         run: |
           dry_run=""
           if [[ "${{ inputs.dry_run }}" == "true" ]]; then
@@ -133,10 +156,12 @@ jobs:
             --temperature "${{ inputs.temperature }}" \
             --max-workers "${{ inputs.max_workers }}" \
             --seed "${{ github.run_id }}" \
+            --stimuli "${STIMULI_PATH}" \
             --output-dir artifacts \
             ${dry_run}
           status=$?
           echo "runner_exit_code=${status}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "exit_code=${status}" >> "${GITHUB_OUTPUT}"
           exit 0
       - name: Upload model evidence
         if: always() && steps.select.outputs.selected == 'true'
@@ -146,6 +171,14 @@ jobs:
           path: artifacts/${{ matrix.model }}/
           if-no-files-found: error
           retention-days: 30
+      - name: Fail after preserving evidence
+        if: always() && steps.select.outputs.selected == 'true' && steps.benchmark.outputs.exit_code != '0'
+        shell: bash
+        env:
+          RUNNER_EXIT_CODE: ${{ steps.benchmark.outputs.exit_code }}
+        run: |
+          echo "Benchmark failed with exit code ${RUNNER_EXIT_CODE}. Evidence was uploaded." >&2
+          exit 1
 
   aggregate-and-commit:
     if: always() && needs.validate-inputs.result == 'success'

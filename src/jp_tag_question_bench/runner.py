@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import re
+import string
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
@@ -31,14 +33,93 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def validate_stimuli(stimuli: dict[str, Any]) -> None:
+    errors: list[str] = []
+    if not isinstance(stimuli.get("study_id"), str) or not stimuli.get("study_id"):
+        errors.append("study_id must be a non-empty string")
+    if not isinstance(stimuli.get("response_instruction"), str) or not stimuli.get("response_instruction"):
+        errors.append("response_instruction must be a non-empty string")
+    if not isinstance(stimuli.get("prompt_separator", "\n\n"), str):
+        errors.append("prompt_separator must be a string")
+
+    conditions = stimuli.get("conditions")
+    if not isinstance(conditions, dict) or not conditions:
+        errors.append("conditions must be a non-empty object")
+        conditions = {}
+    if "neutral" not in conditions:
+        errors.append("conditions must contain the neutral baseline")
+    allowed_fields = {"decision", "comparison", "option", "domain"}
+    formatter = string.Formatter()
+    for condition, template in conditions.items():
+        if not isinstance(condition, str) or not condition:
+            errors.append("condition keys must be non-empty strings")
+            continue
+        if not isinstance(template, str) or not template:
+            errors.append(f"condition {condition!r} must have a non-empty template")
+            continue
+        try:
+            fields = {field for _, field, _, _ in formatter.parse(template) if field}
+        except ValueError as error:
+            errors.append(f"condition {condition!r} has an invalid template: {error}")
+            continue
+        unknown = fields - allowed_fields
+        if unknown:
+            errors.append(f"condition {condition!r} has unknown placeholders: {sorted(unknown)}")
+
+    labels = stimuli.get("condition_labels", {})
+    if not isinstance(labels, dict):
+        errors.append("condition_labels must be an object")
+    elif set(labels) - set(conditions):
+        errors.append("condition_labels contains keys not present in conditions")
+    elif any(not isinstance(label, str) or not label for label in labels.values()):
+        errors.append("condition label values must be non-empty strings")
+
+    items = stimuli.get("items")
+    if not isinstance(items, list) or len(items) < 2:
+        errors.append("items must contain at least two items")
+        items = []
+    item_ids: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append(f"items[{index}] must be an object")
+            continue
+        for field in ("id", "decision", "domain"):
+            if not isinstance(item.get(field), str) or not item.get(field):
+                errors.append(f"items[{index}].{field} must be a non-empty string")
+        item_ids.append(str(item.get("id", "")))
+        options = item.get("options")
+        if not isinstance(options, list) or len(options) != 2:
+            errors.append(f"items[{index}].options must contain exactly two options")
+            continue
+        for option_index, option in enumerate(options):
+            if not isinstance(option, dict):
+                errors.append(f"items[{index}].options[{option_index}] must be an object")
+                continue
+            for field in ("label", "comparison"):
+                if not isinstance(option.get(field), str) or not option.get(field):
+                    errors.append(
+                        f"items[{index}].options[{option_index}].{field} must be a non-empty string"
+                    )
+    if len(item_ids) != len(set(item_ids)):
+        errors.append("item ids must be unique")
+    if errors:
+        raise SystemExit("invalid stimuli config:\n- " + "\n- ".join(errors))
+
+
 def build_prompts(stimuli: dict[str, Any], model_key: str, replicates: int, seed: int) -> list[dict[str, Any]]:
     prompts: list[dict[str, Any]] = []
     instruction = stimuli["response_instruction"]
+    separator = stimuli.get("prompt_separator", "\n\n")
     for replicate in range(1, replicates + 1):
         for item in stimuli["items"]:
             for option_index, option in enumerate(item["options"]):
                 for condition, template in stimuli["conditions"].items():
-                    text = template.format(decision=item["decision"], comparison=option["comparison"])
+                    text = template.format(
+                        decision=item["decision"],
+                        comparison=option["comparison"],
+                        option=option["label"],
+                        domain=item["domain"],
+                    )
                     prompts.append(
                         {
                             "prompt_id": (
@@ -50,7 +131,7 @@ def build_prompts(stimuli: dict[str, Any], model_key: str, replicates: int, seed
                             "condition": condition,
                             "option_index": option_index,
                             "option": option["label"],
-                            "prompt": f"{text}{instruction}",
+                            "prompt": f"{text}{separator}{instruction}",
                         }
                     )
     random.Random(seed).shuffle(prompts)
@@ -141,6 +222,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"disabled model: {args.model_key}")
 
     stimuli = load_json(args.stimuli)
+    validate_stimuli(stimuli)
     prompts = build_prompts(stimuli, args.model_key, args.replicates, args.seed)
     output_dir = args.output_dir / safe_slug(args.model_key)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -183,6 +265,19 @@ def main(argv: list[str] | None = None) -> None:
         "classification_counts": counts,
         "completed_at": datetime.now(UTC).isoformat(),
         "dry_run": args.dry_run,
+        "stimuli": {
+            "path": args.stimuli.as_posix(),
+            "sha256": hashlib.sha256(args.stimuli.read_bytes()).hexdigest(),
+            "conditions": [
+                {
+                    "key": condition,
+                    "label": stimuli.get("condition_labels", {}).get(condition, condition),
+                }
+                for condition in stimuli["conditions"]
+            ],
+            "item_ids": [item["id"] for item in stimuli["items"]],
+            "item_count": len(stimuli["items"]),
+        },
     }
     (output_dir / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
